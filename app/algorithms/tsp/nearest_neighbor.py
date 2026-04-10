@@ -7,8 +7,8 @@ from app.algorithms.base import BaseAlgorithm, AlgorithmResult
 class NearestNeighborTSP(BaseAlgorithm):
     """Алгоритм ближайшего соседа для TSP."""
 
-    name = "nearest_neighbor"
-    display_name = "Ближайший сосед"
+    name = "greedy"
+    display_name = "Жадный алгоритм"
 
     def solve(self, input_data: dict, params: dict | None = None) -> AlgorithmResult:
         dist_matrix = self._get_distance_matrix(input_data)

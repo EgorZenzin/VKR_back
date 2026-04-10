@@ -2,16 +2,15 @@ from app.algorithms.base import BaseAlgorithm, AlgorithmResult
 
 from app.algorithms.tsp.nearest_neighbor import NearestNeighborTSP
 from app.algorithms.tsp.genetic import GeneticTSP
-from app.algorithms.tsp.ant_colony import AntColonyTSP
 from app.algorithms.tsp.simulated_annealing import SimulatedAnnealingTSP
 
-from app.algorithms.assignment.hungarian import HungarianAssignment
 from app.algorithms.assignment.greedy import GreedyAssignment
 from app.algorithms.assignment.genetic import GeneticAssignment
+from app.algorithms.assignment.simulated_annealing import SimulatedAnnealingAssignment
 
-from app.algorithms.knapsack.dynamic import DynamicKnapsack
 from app.algorithms.knapsack.greedy import GreedyKnapsack
 from app.algorithms.knapsack.genetic import GeneticKnapsack
+from app.algorithms.knapsack.simulated_annealing import SimulatedAnnealingKnapsack
 
 from app.algorithms.graph_coloring.greedy import GreedyGraphColoring
 from app.algorithms.graph_coloring.genetic import GeneticGraphColoring
@@ -24,20 +23,19 @@ from app.algorithms.max_flow.dinic import DinicMaxFlow
 
 PROBLEM_ALGORITHMS: dict[str, dict[str, BaseAlgorithm]] = {
     "tsp": {
-        "nearest_neighbor": NearestNeighborTSP(),
+        "greedy": NearestNeighborTSP(),
         "genetic": GeneticTSP(),
-        "ant_colony": AntColonyTSP(),
         "simulated_annealing": SimulatedAnnealingTSP(),
     },
     "assignment": {
-        "hungarian": HungarianAssignment(),
         "greedy": GreedyAssignment(),
         "genetic": GeneticAssignment(),
+        "simulated_annealing": SimulatedAnnealingAssignment(),
     },
     "knapsack": {
-        "dynamic_programming": DynamicKnapsack(),
         "greedy": GreedyKnapsack(),
         "genetic": GeneticKnapsack(),
+        "simulated_annealing": SimulatedAnnealingKnapsack(),
     },
     "graph_coloring": {
         "greedy": GreedyGraphColoring(),
