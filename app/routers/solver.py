@@ -21,6 +21,39 @@ def _convert_numpy(obj):
     return obj
 
 
+def _normalize_input(input_data: dict) -> dict:
+    """Нормализует ключи input_data от фронтенда к формату бэкенда."""
+    data = dict(input_data)
+
+    # num_vertices -> n_vertices
+    if "num_vertices" in data and "n_vertices" not in data:
+        data["n_vertices"] = data.pop("num_vertices")
+
+    # Нормализация рёбер: from/to -> u/v, а также [u, v] -> {"u": u, "v": v}
+    if "edges" in data:
+        normalized_edges = []
+        for e in data["edges"]:
+            if isinstance(e, dict):
+                edge = dict(e)
+            elif isinstance(e, (list, tuple)):
+                # [u, v] или [u, v, capacity]
+                edge = {"u": e[0], "v": e[1]}
+                if len(e) > 2:
+                    edge["capacity"] = e[2]
+            else:
+                edge = e
+                normalized_edges.append(edge)
+                continue
+            if "from" in edge and "u" not in edge:
+                edge["u"] = edge.pop("from")
+            if "to" in edge and "v" not in edge:
+                edge["v"] = edge.pop("to")
+            normalized_edges.append(edge)
+        data["edges"] = normalized_edges
+
+    return data
+
+
 class SolveRequest(BaseModel):
     problem_type: str
     algorithm: str
@@ -46,9 +79,10 @@ def list_problems():
 
 @router.post("/solve", response_model=SolveResponse)
 def solve(request: SolveRequest, db: Session = Depends(get_db)):
+    input_data = _normalize_input(request.input_data)
     try:
         result = solve_problem(
-            request.problem_type, request.algorithm, request.input_data, request.params
+            request.problem_type, request.algorithm, input_data, request.params
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -64,7 +98,7 @@ def solve(request: SolveRequest, db: Session = Depends(get_db)):
     db_result = Result(
         problem_type=request.problem_type,
         algorithm=request.algorithm,
-        input_data=request.input_data,
+        input_data=input_data,
         output_data={"solution": solution},
         cost=cost,
         execution_time=exec_time,
@@ -101,9 +135,10 @@ class PreviewResponse(BaseModel):
 @router.post("/solve/preview", response_model=PreviewResponse)
 def solve_preview(request: SolveRequest):
     """Быстрое решение без сохранения в БД — для динамических ползунков."""
+    input_data = _normalize_input(request.input_data)
     try:
         result = solve_problem(
-            request.problem_type, request.algorithm, request.input_data, request.params
+            request.problem_type, request.algorithm, input_data, request.params
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

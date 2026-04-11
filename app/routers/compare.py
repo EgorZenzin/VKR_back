@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.result import ComparisonResult
 from app.services.compare_service import compare_algorithms
+from app.routers.solver import _normalize_input
 
 router = APIRouter(tags=["compare"])
 
@@ -21,16 +22,18 @@ def compare(request: CompareRequest, db: Session = Depends(get_db)):
     if len(request.algorithms) < 2:
         raise HTTPException(status_code=400, detail="Выберите минимум 2 алгоритма для сравнения")
 
+    input_data = _normalize_input(request.input_data)
+
     try:
         results = compare_algorithms(
-            request.problem_type, request.algorithms, request.input_data, request.params
+            request.problem_type, request.algorithms, input_data, request.params
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
     db_result = ComparisonResult(
         problem_type=request.problem_type,
-        input_data=request.input_data,
+        input_data=input_data,
         results=results,
     )
     db.add(db_result)
