@@ -1,13 +1,19 @@
-import numpy as np
-import random
-import math
+"""Имитация отжига для задачи коммивояжёра."""
+
 import time
+import math
+import random
+import numpy as np
 
 from app.algorithms.base import BaseAlgorithm, AlgorithmResult
 
 
 class SimulatedAnnealingTSP(BaseAlgorithm):
-    """Имитация отжига для TSP."""
+    """Имитация отжига (Simulated Annealing) с 2-opt соседством.
+
+    Начальное решение — случайная перестановка. Соседнее решение получается
+    реверсом подмассива (2-opt). История сходимости записывается каждые 100 шагов.
+    """
 
     name = "simulated_annealing"
     display_name = "Имитация отжига"
@@ -18,27 +24,26 @@ class SimulatedAnnealingTSP(BaseAlgorithm):
         cooling_rate = params.get("cooling_rate", 0.9995)
         min_temp = params.get("min_temp", 1e-8)
 
-        dist_matrix = self._get_distance_matrix(input_data)
+        dist_matrix = _get_distance_matrix(input_data)
         n = len(dist_matrix)
 
         start = time.perf_counter()
 
-        # Начальное решение — случайная перестановка
         current = list(np.random.permutation(n))
-        current_cost = self._route_cost(current, dist_matrix)
+        current_cost = _route_cost(current, dist_matrix)
 
         best = current[:]
         best_cost = current_cost
         temp = initial_temp
         convergence = []
-
         iteration = 0
+
         while temp > min_temp:
-            # Генерация соседа (2-opt swap)
+            # 2-opt: реверс случайного подмассива
             i, j = sorted(random.sample(range(n), 2))
             neighbor = current[:]
             neighbor[i:j + 1] = reversed(neighbor[i:j + 1])
-            neighbor_cost = self._route_cost(neighbor, dist_matrix)
+            neighbor_cost = _route_cost(neighbor, dist_matrix)
 
             delta = neighbor_cost - current_cost
             if delta < 0 or random.random() < math.exp(-delta / temp):
@@ -53,26 +58,37 @@ class SimulatedAnnealingTSP(BaseAlgorithm):
             iteration += 1
 
             if iteration % 100 == 0:
-                convergence.append(best_cost)
+                convergence.append(float(best_cost))
 
         elapsed = time.perf_counter() - start
 
+        # Финальная точка, если не записана
+        if not convergence or convergence[-1] != best_cost:
+            convergence.append(float(best_cost))
+
         return AlgorithmResult(
             solution=best,
-            cost=best_cost,
+            cost=float(best_cost),
             execution_time=elapsed,
+            iterations=iteration,
             convergence_history=convergence,
         )
 
-    def _route_cost(self, route: list[int], dist_matrix: np.ndarray) -> float:
-        cost = sum(dist_matrix[route[i]][route[i + 1]] for i in range(len(route) - 1))
-        cost += dist_matrix[route[-1]][route[0]]
-        return cost
 
-    def _get_distance_matrix(self, input_data: dict) -> np.ndarray:
-        if "distance_matrix" in input_data and input_data["distance_matrix"]:
-            return np.array(input_data["distance_matrix"])
-        cities = input_data["cities"]
-        coords = np.array([[c["x"], c["y"]] for c in cities])
-        diff = coords[:, np.newaxis, :] - coords[np.newaxis, :, :]
-        return np.sqrt((diff ** 2).sum(axis=2))
+def _route_cost(route: list[int], dist_matrix: np.ndarray) -> float:
+    cost = sum(dist_matrix[route[i]][route[i + 1]] for i in range(len(route) - 1))
+    cost += dist_matrix[route[-1]][route[0]]
+    return float(cost)
+
+
+def _get_distance_matrix(input_data: dict) -> np.ndarray:
+    if "distance_matrix" in input_data and input_data["distance_matrix"]:
+        return np.array(input_data["distance_matrix"])
+    cities = input_data["cities"]
+    coords = np.array([[c["x"], c["y"]] for c in cities])
+    diff = coords[:, np.newaxis, :] - coords[np.newaxis, :, :]
+    return np.sqrt((diff ** 2).sum(axis=2))
+import numpy as np
+import random
+import math
+import time

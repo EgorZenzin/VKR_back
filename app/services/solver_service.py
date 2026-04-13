@@ -1,89 +1,60 @@
-from app.algorithms.base import BaseAlgorithm, AlgorithmResult
+"""Сервис решения задач.
 
-from app.algorithms.tsp.nearest_neighbor import NearestNeighborTSP
-from app.algorithms.tsp.genetic import GeneticTSP
-from app.algorithms.tsp.simulated_annealing import SimulatedAnnealingTSP
+Оркестрирует запуск алгоритма: получает алгоритм из реестра,
+вызывает solve(), формирует унифицированный ответ с данными визуализации.
+"""
 
-from app.algorithms.assignment.greedy import GreedyAssignment
-from app.algorithms.assignment.genetic import GeneticAssignment
-from app.algorithms.assignment.simulated_annealing import SimulatedAnnealingAssignment
+from __future__ import annotations
 
-from app.algorithms.knapsack.greedy import GreedyKnapsack
-from app.algorithms.knapsack.genetic import GeneticKnapsack
-from app.algorithms.knapsack.simulated_annealing import SimulatedAnnealingKnapsack
-
-from app.algorithms.graph_coloring.greedy import GreedyGraphColoring
-from app.algorithms.graph_coloring.genetic import GeneticGraphColoring
-from app.algorithms.graph_coloring.simulated_annealing import SimulatedAnnealingGraphColoring
-
-from app.algorithms.max_flow.ford_fulkerson import FordFulkersonMaxFlow
-from app.algorithms.max_flow.edmonds_karp import EdmondsKarpMaxFlow
-from app.algorithms.max_flow.dinic import DinicMaxFlow
-
-
-PROBLEM_ALGORITHMS: dict[str, dict[str, BaseAlgorithm]] = {
-    "tsp": {
-        "greedy": NearestNeighborTSP(),
-        "genetic": GeneticTSP(),
-        "simulated_annealing": SimulatedAnnealingTSP(),
-    },
-    "assignment": {
-        "greedy": GreedyAssignment(),
-        "genetic": GeneticAssignment(),
-        "simulated_annealing": SimulatedAnnealingAssignment(),
-    },
-    "knapsack": {
-        "greedy": GreedyKnapsack(),
-        "genetic": GeneticKnapsack(),
-        "simulated_annealing": SimulatedAnnealingKnapsack(),
-    },
-    "graph_coloring": {
-        "greedy": GreedyGraphColoring(),
-        "genetic": GeneticGraphColoring(),
-        "simulated_annealing": SimulatedAnnealingGraphColoring(),
-    },
-    "max_flow": {
-        "ford_fulkerson": FordFulkersonMaxFlow(),
-        "edmonds_karp": EdmondsKarpMaxFlow(),
-        "dinic": DinicMaxFlow(),
-    },
-}
-
-PROBLEM_DISPLAY_NAMES = {
-    "tsp": "Задача коммивояжёра (TSP)",
-    "assignment": "Задача о назначениях",
-    "knapsack": "Задача о рюкзаке",
-    "graph_coloring": "Раскраска графа",
-    "max_flow": "Максимальный поток",
-}
-
-
-def get_problems_info() -> list[dict]:
-    result = []
-    for problem_key, algorithms in PROBLEM_ALGORITHMS.items():
-        algo_list = []
-        for algo_key, algo_instance in algorithms.items():
-            algo_list.append({
-                "key": algo_key,
-                "name": algo_instance.display_name,
-            })
-        result.append({
-            "key": problem_key,
-            "name": PROBLEM_DISPLAY_NAMES.get(problem_key, problem_key),
-            "algorithms": algo_list,
-        })
-    return result
+from app.algorithms.registry import (
+    get_algorithm,
+    TASK_DISPLAY_NAMES,
+)
+from app.algorithms.base import AlgorithmResult
+from app.schemas.common import SolveResponse
+from app.utils.helpers import convert_numpy
+from app.visualization_data.chart_data import build_visualization_data
 
 
 def solve_problem(
-    problem_type: str, algorithm: str, input_data: dict, params: dict | None = None
-) -> AlgorithmResult:
-    if problem_type not in PROBLEM_ALGORITHMS:
-        raise ValueError(f"Неизвестная задача: {problem_type}")
-    algorithms = PROBLEM_ALGORITHMS[problem_type]
-    if algorithm not in algorithms:
-        raise ValueError(
-            f"Неизвестный алгоритм '{algorithm}' для задачи '{problem_type}'. "
-            f"Доступные: {list(algorithms.keys())}"
-        )
-    return algorithms[algorithm].solve(input_data, params)
+    task_name: str,
+    algorithm_name: str,
+    input_data: dict,
+    params: dict | None = None,
+) -> SolveResponse:
+    """Решить задачу выбранным алгоритмом и вернуть SolveResponse."""
+
+    algo = get_algorithm(task_name, algorithm_name)
+    result: AlgorithmResult = algo.solve(input_data, params)
+
+    # Подготовка данных визуализации
+    viz_data = build_visualization_data(
+        task_name, input_data, result.solution, result.extra,
+    )
+
+    # Извлечение ML-метрик из extra (если алгоритм с ML)
+    ml_metrics = None
+    if result.extra.get("ml_used"):
+        ml_metrics = {
+            k: v for k, v in result.extra.items()
+            if k in (
+                "ml_used", "surrogate_model", "exact_evaluations",
+                "surrogate_evaluations", "surrogate_accuracy_r2",
+                "warmup_generations", "surrogate_ratio", "training_samples",
+            )
+        }
+
+    return SolveResponse(
+        task_name=task_name,
+        task_display_name=TASK_DISPLAY_NAMES.get(task_name, task_name),
+        algorithm_name=algorithm_name,
+        display_name=algo.display_name,
+        input_data=convert_numpy(input_data),
+        solution=convert_numpy(result.solution),
+        objective_value=float(result.cost),
+        execution_time=round(result.execution_time, 6),
+        iterations=result.iterations,
+        convergence_history=[float(v) for v in result.convergence_history],
+        visualization_data=convert_numpy(viz_data),
+        ml_metrics=ml_metrics,
+    )

@@ -1,12 +1,18 @@
-import numpy as np
-import random
+"""Генетический алгоритм для задачи коммивояжёра."""
+
 import time
+import random
+import numpy as np
 
 from app.algorithms.base import BaseAlgorithm, AlgorithmResult
 
 
 class GeneticTSP(BaseAlgorithm):
-    """Генетический алгоритм для TSP."""
+    """Генетический алгоритм с OX-кроссовером.
+
+    Особь — перестановка городов. Селекция турнирная, кроссовер — Order Crossover,
+    мутация — обмен двух позиций. Сохраняется история лучшего значения по поколениям.
+    """
 
     name = "genetic"
     display_name = "Генетический алгоритм"
@@ -18,7 +24,7 @@ class GeneticTSP(BaseAlgorithm):
         mutation_rate = params.get("mutation_rate", 0.02)
         crossover_rate = params.get("crossover_rate", 0.8)
 
-        dist_matrix = self._get_distance_matrix(input_data)
+        dist_matrix = _get_distance_matrix(input_data)
         n = len(dist_matrix)
 
         start = time.perf_counter()
@@ -38,16 +44,16 @@ class GeneticTSP(BaseAlgorithm):
                     best_cost = cost
                     best_route = ind[:]
 
-            convergence.append(best_cost)
+            convergence.append(float(best_cost))
 
-            # Селекция (турнирная)
+            # Турнирная селекция
             new_pop = []
             for _ in range(pop_size):
                 t1, t2 = random.sample(range(pop_size), 2)
                 winner = population[t1] if fitness[t1] > fitness[t2] else population[t2]
                 new_pop.append(winner[:])
 
-            # Кроссовер (OX)
+            # OX-кроссовер
             for i in range(0, pop_size - 1, 2):
                 if random.random() < crossover_rate:
                     child1, child2 = self._ox_crossover(new_pop[i], new_pop[i + 1], n)
@@ -57,8 +63,8 @@ class GeneticTSP(BaseAlgorithm):
             # Мутация (swap)
             for ind in new_pop:
                 if random.random() < mutation_rate:
-                    i, j = random.sample(range(n), 2)
-                    ind[i], ind[j] = ind[j], ind[i]
+                    a, b = random.sample(range(n), 2)
+                    ind[a], ind[b] = ind[b], ind[a]
 
             population = new_pop
 
@@ -66,37 +72,43 @@ class GeneticTSP(BaseAlgorithm):
 
         return AlgorithmResult(
             solution=best_route,
-            cost=best_cost,
+            cost=float(best_cost),
             execution_time=elapsed,
+            iterations=generations,
             convergence_history=convergence,
         )
 
-    def _route_cost(self, route: list[int], dist_matrix: np.ndarray) -> float:
+    # ── вспомогательные методы ──────────────────────────────────────
+
+    @staticmethod
+    def _route_cost(route: list[int], dist_matrix: np.ndarray) -> float:
         cost = sum(dist_matrix[route[i]][route[i + 1]] for i in range(len(route) - 1))
         cost += dist_matrix[route[-1]][route[0]]
-        return cost
+        return float(cost)
 
-    def _ox_crossover(self, p1: list, p2: list, n: int) -> tuple[list, list]:
+    @staticmethod
+    def _ox_crossover(p1: list, p2: list, n: int) -> tuple[list, list]:
         a, b = sorted(random.sample(range(n), 2))
-        child1 = [-1] * n
-        child2 = [-1] * n
+        child1, child2 = [-1] * n, [-1] * n
         child1[a:b + 1] = p1[a:b + 1]
         child2[a:b + 1] = p2[a:b + 1]
-        self._fill_ox(child1, p2, b, n)
-        self._fill_ox(child2, p1, b, n)
+        _fill_ox(child1, p2, b, n)
+        _fill_ox(child2, p1, b, n)
         return child1, child2
 
-    def _fill_ox(self, child: list, parent: list, b: int, n: int):
-        pos = (b + 1) % n
-        for gene in parent[b + 1:] + parent[:b + 1]:
-            if gene not in child:
-                child[pos] = gene
-                pos = (pos + 1) % n
 
-    def _get_distance_matrix(self, input_data: dict) -> np.ndarray:
-        if "distance_matrix" in input_data and input_data["distance_matrix"]:
-            return np.array(input_data["distance_matrix"])
-        cities = input_data["cities"]
-        coords = np.array([[c["x"], c["y"]] for c in cities])
-        diff = coords[:, np.newaxis, :] - coords[np.newaxis, :, :]
-        return np.sqrt((diff ** 2).sum(axis=2))
+def _fill_ox(child: list, parent: list, b: int, n: int):
+    pos = (b + 1) % n
+    for gene in parent[b + 1:] + parent[:b + 1]:
+        if gene not in child:
+            child[pos] = gene
+            pos = (pos + 1) % n
+
+
+def _get_distance_matrix(input_data: dict) -> np.ndarray:
+    if "distance_matrix" in input_data and input_data["distance_matrix"]:
+        return np.array(input_data["distance_matrix"])
+    cities = input_data["cities"]
+    coords = np.array([[c["x"], c["y"]] for c in cities])
+    diff = coords[:, np.newaxis, :] - coords[np.newaxis, :, :]
+    return np.sqrt((diff ** 2).sum(axis=2))

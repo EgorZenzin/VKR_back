@@ -1,10 +1,17 @@
+"""Динамическое программирование для задачи о рюкзаке."""
+
 import time
 
 from app.algorithms.base import BaseAlgorithm, AlgorithmResult
 
 
 class DynamicKnapsack(BaseAlgorithm):
-    """Динамическое программирование для задачи о рюкзаке."""
+    """Динамическое программирование (0-1 Knapsack).
+
+    Гарантирует оптимальное решение для целочисленных весов.
+    Для вещественных весов производится масштабирование до целых.
+    Сложность: O(n · W).
+    """
 
     name = "dynamic_programming"
     display_name = "Динамическое программирование"
@@ -16,11 +23,11 @@ class DynamicKnapsack(BaseAlgorithm):
 
         start = time.perf_counter()
 
-        # Для вещественных весов дискретизируем (масштаб до целых)
-        scale = 1
         weights = [item["weight"] for item in items]
         values = [item["value"] for item in items]
 
+        # Масштабирование вещественных весов
+        scale = 1
         if any(isinstance(w, float) and w != int(w) for w in weights):
             scale = 100
             int_weights = [int(round(w * scale)) for w in weights]
@@ -38,15 +45,15 @@ class DynamicKnapsack(BaseAlgorithm):
                     dp[w] = dp[w - int_weights[i]] + values[i]
                     keep[i][w] = True
 
-        # Восстановление решения
+        # Восстановление решения (backtracking)
         selected = []
         w = int_capacity
         for i in range(n - 1, -1, -1):
             if keep[i][w]:
                 selected.append(i)
                 w -= int_weights[i]
-
         selected.reverse()
+
         total_value = sum(values[i] for i in selected)
         total_weight = sum(weights[i] for i in selected)
 
@@ -56,5 +63,8 @@ class DynamicKnapsack(BaseAlgorithm):
             solution=selected,
             cost=total_value,
             execution_time=elapsed,
+            iterations=None,
+            convergence_history=[total_value],
             extra={"total_weight": total_weight},
         )
+import time

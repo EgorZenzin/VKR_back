@@ -1,11 +1,18 @@
-import numpy as np
+"""Жадный алгоритм для задачи назначения."""
+
 import time
+import numpy as np
 
 from app.algorithms.base import BaseAlgorithm, AlgorithmResult
 
 
 class GreedyAssignment(BaseAlgorithm):
-    """Жадный алгоритм для задачи о назначениях."""
+    """Жадный алгоритм назначения.
+
+    Сортирует все ячейки матрицы стоимости по возрастанию и последовательно
+    назначает пары (работник, задание), пропуская уже занятые строки/столбцы.
+    Сложность: O(n² log n).
+    """
 
     name = "greedy"
     display_name = "Жадный алгоритм"
@@ -16,21 +23,21 @@ class GreedyAssignment(BaseAlgorithm):
 
         start = time.perf_counter()
 
-        assigned_cols = set()
-        assignments = []
-        total_cost = 0.0
-
         # Сортируем все ячейки по стоимости
         cells = []
         for i in range(n):
             for j in range(n):
-                cells.append((cost_matrix[i][j], i, j))
+                cells.append((float(cost_matrix[i][j]), i, j))
         cells.sort()
 
-        assigned_rows = set()
+        assigned_rows: set[int] = set()
+        assigned_cols: set[int] = set()
+        assignments = []
+        total_cost = 0.0
+
         for cost, i, j in cells:
             if i not in assigned_rows and j not in assigned_cols:
-                assignments.append((i, j))
+                assignments.append([i, j])
                 assigned_rows.add(i)
                 assigned_cols.add(j)
                 total_cost += cost
@@ -44,4 +51,8 @@ class GreedyAssignment(BaseAlgorithm):
             solution=assignments,
             cost=float(total_cost),
             execution_time=elapsed,
+            iterations=None,
+            convergence_history=[float(total_cost)],
         )
+import numpy as np
+import time

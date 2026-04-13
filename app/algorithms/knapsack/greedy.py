@@ -1,10 +1,16 @@
+"""Жадный алгоритм для задачи о рюкзаке."""
+
 import time
 
 from app.algorithms.base import BaseAlgorithm, AlgorithmResult
 
 
 class GreedyKnapsack(BaseAlgorithm):
-    """Жадный алгоритм для задачи о рюкзаке."""
+    """Жадный алгоритм по удельной ценности (value / weight).
+
+    Предметы сортируются по убыванию удельной ценности и добавляются
+    в рюкзак, пока позволяет ёмкость. Сложность: O(n log n).
+    """
 
     name = "greedy"
     display_name = "Жадный алгоритм"
@@ -39,5 +45,8 @@ class GreedyKnapsack(BaseAlgorithm):
             solution=selected,
             cost=total_value,
             execution_time=elapsed,
+            iterations=None,
+            convergence_history=[total_value],
             extra={"total_weight": total_weight},
         )
+import time

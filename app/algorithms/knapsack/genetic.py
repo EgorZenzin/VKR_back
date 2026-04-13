@@ -1,11 +1,18 @@
-import random
+"""Генетический алгоритм для задачи о рюкзаке."""
+
 import time
+import random
 
 from app.algorithms.base import BaseAlgorithm, AlgorithmResult
 
 
 class GeneticKnapsack(BaseAlgorithm):
-    """Генетический алгоритм для задачи о рюкзаке."""
+    """Генетический алгоритм с бинарным кодированием.
+
+    Особь — бинарный вектор (0/1 для каждого предмета).
+    Селекция турнирная, кроссовер одноточечный, мутация побитовая.
+    Решения, превышающие ёмкость, получают нулевой fitness.
+    """
 
     name = "genetic"
     display_name = "Генетический алгоритм"
@@ -28,21 +35,21 @@ class GeneticKnapsack(BaseAlgorithm):
         population = [[random.randint(0, 1) for _ in range(n)] for _ in range(pop_size)]
         convergence = []
         best_solution = None
-        best_value = -1
+        best_value = -1.0
 
         for gen in range(generations):
             fitness = []
             for ind in population:
                 w = sum(weights[i] * ind[i] for i in range(n))
                 v = sum(values[i] * ind[i] for i in range(n))
-                fitness.append(v if w <= capacity else 0)
+                fitness.append(v if w <= capacity else 0.0)
 
             for i, f in enumerate(fitness):
                 if f > best_value:
                     best_value = f
                     best_solution = population[i][:]
 
-            convergence.append(best_value)
+            convergence.append(float(best_value))
 
             # Турнирная селекция
             new_pop = []
@@ -70,13 +77,14 @@ class GeneticKnapsack(BaseAlgorithm):
 
         elapsed = time.perf_counter() - start
 
-        selected = [i for i in range(n) if best_solution[i] == 1]
+        selected = [i for i in range(n) if best_solution and best_solution[i] == 1]
         total_weight = sum(weights[i] for i in selected)
 
         return AlgorithmResult(
             solution=selected,
-            cost=best_value,
+            cost=float(best_value),
             execution_time=elapsed,
+            iterations=generations,
             convergence_history=convergence,
             extra={"total_weight": total_weight},
         )
