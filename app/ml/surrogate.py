@@ -33,21 +33,28 @@ class MLPSurrogateModel(BaseSurrogateModel):
     def __init__(
         self,
         hidden_layers: tuple[int, ...] = (32, 16),
-        max_iter: int = 50,
+        max_iter: int = 200,
         learning_rate_init: float = 0.01,
         activation: str = "relu",
         random_state: int | None = 42,
+        early_stopping: bool = True,
     ):
         self.hidden_layers = hidden_layers
         self.max_iter = max_iter
 
+        # early_stopping=True заставляет MLP останавливаться, как только
+        # validation loss перестаёт улучшаться. Это даёт стабильно лучший
+        # R² на отложенной выборке без лишних эпох.
         self._model = MLPRegressor(
             hidden_layer_sizes=hidden_layers,
             max_iter=max_iter,
             learning_rate_init=learning_rate_init,
             activation=activation,
             random_state=random_state,
-            early_stopping=False,
+            early_stopping=early_stopping,
+            validation_fraction=0.15,
+            n_iter_no_change=15,
+            tol=1e-5,
             warm_start=False,
         )
         self._scaler_X = StandardScaler()
@@ -56,7 +63,8 @@ class MLPSurrogateModel(BaseSurrogateModel):
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> None:
         """Обучить модель на данных."""
-        if len(X) < 5:
+        # Для early_stopping нужно ≥ ~7 примеров (validation split).
+        if len(X) < 10:
             return
 
         X_scaled = self._scaler_X.fit_transform(X)

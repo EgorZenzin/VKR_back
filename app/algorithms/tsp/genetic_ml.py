@@ -60,12 +60,22 @@ class GeneticMLTSP(BaseAlgorithm):
         top_indices = np.argsort(pred_costs)[:pop_size]
         population = [candidates[i] for i in top_indices]
 
+        # Сидируем популяцию детерминированными жадными маршрутами с разных
+        # стартовых городов — гарантирует, что начальная популяция не хуже
+        # обычного жадного решения.
+        seed_count = min(n, max(3, pop_size // 10))
+        for s in range(seed_count):
+            population[s] = _greedy_route(dist_matrix, start_city=s)
+
         surrogate_evals = candidate_count
 
-        # R² суррогата на небольшой проверке
-        check_n = min(20, pop_size)
-        actual_sample = np.array([_route_cost(population[i], dist_matrix) for i in range(check_n)])
-        surrogate_r2 = surrogate.score(X_cand[top_indices[:check_n]], actual_sample)
+        # R² суррогата на независимой валидационной выборке (не на top-K!).
+        val_size = min(40, max(15, warmup_samples // 3))
+        val_routes = [list(np.random.permutation(n)) for _ in range(val_size)]
+        val_X = np.array([_encode_route(r, n) for r in val_routes])
+        val_y = np.array([_route_cost(r, dist_matrix) for r in val_routes])
+        exact_evals += val_size
+        surrogate_r2 = surrogate.score(val_X, val_y)
 
         # ── Фаза 3: Стандартный ГА (сокращённые поколения) ─────────
         reduced_gens = max(1, int(generations * 0.4))
@@ -135,6 +145,25 @@ def _route_cost(route: list[int], dist_matrix: np.ndarray) -> float:
     cost = sum(dist_matrix[route[i]][route[i + 1]] for i in range(len(route) - 1))
     cost += dist_matrix[route[-1]][route[0]]
     return float(cost)
+
+
+def _greedy_route(dist_matrix: np.ndarray, start_city: int = 0) -> list[int]:
+    """Детерминированный жадный маршрут от заданного стартового города."""
+    n = len(dist_matrix)
+    visited = [False] * n
+    route = [start_city]
+    visited[start_city] = True
+    for _ in range(n - 1):
+        cur = route[-1]
+        best_j = -1
+        best_d = float("inf")
+        for j in range(n):
+            if not visited[j] and dist_matrix[cur][j] < best_d:
+                best_d = dist_matrix[cur][j]
+                best_j = j
+        route.append(best_j)
+        visited[best_j] = True
+    return route
 
 
 def _encode_route(route: list[int], n: int) -> list[float]:

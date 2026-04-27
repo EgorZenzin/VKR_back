@@ -62,10 +62,17 @@ class GeneticMLKnapsack(BaseAlgorithm):
 
         surrogate_evals = candidate_count
 
-        # R² суррогата
-        check_n = min(20, pop_size)
-        actual_sample = np.array([_exact_fitness(population[i], weights, values, capacity) for i in range(check_n)])
-        surrogate_r2 = surrogate.score(X_cand[top_indices[:check_n]], actual_sample)
+        # R² суррогата на независимой валидационной выборке.
+        val_size = min(40, max(15, warmup_samples // 3))
+        val_solutions = [
+            [random.randint(0, 1) for _ in range(n)] for _ in range(val_size)
+        ]
+        val_X = np.array(val_solutions, dtype=float)
+        val_y = np.array(
+            [_exact_fitness(s, weights, values, capacity) for s in val_solutions]
+        )
+        exact_evals += val_size
+        surrogate_r2 = surrogate.score(val_X, val_y)
 
         # ── Фаза 3: Стандартный ГА (сокращённые поколения) ─────────
         reduced_gens = max(1, int(generations * 0.4))

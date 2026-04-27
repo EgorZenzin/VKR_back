@@ -1,14 +1,9 @@
 """Жадный алгоритм с ML-суррогатом для задачи о рюкзаке.
 
-Подход: ML-суррогат отбирает лучшие жадные решения из множества
-вариантов с разными критериями сортировки и рандомизацией.
-
-1. Обучение суррогата на случайных бинарных решениях.
-2. Генерация пула жадных решений с варьируемым критерием сортировки
-   (value/weight, value, value/weight^α при разных α) и случайным выбором
-   среди эквивалентных кандидатов.
-3. Быстрая оценка всех вариантов суррогатом.
-4. Точный пересчёт top-K решений и возврат лучшего.
+Стратегия:
+1. Если n маленькое — fallback к обычному жадному.
+2. Иначе: лёгкий MLP, рандомизированные жадные кандидаты с разными
+   критериями сортировки, ML-скрининг, точная переоценка top-K.
 """
 
 import time
@@ -16,7 +11,11 @@ import random
 import numpy as np
 
 from app.algorithms.base import BaseAlgorithm, AlgorithmResult
+from app.algorithms.knapsack.greedy import GreedyKnapsack
 from app.ml.surrogate import MLPSurrogateModel
+
+
+ML_MIN_N = 20
 
 
 class GreedyMLKnapsack(BaseAlgorithm):
@@ -27,24 +26,44 @@ class GreedyMLKnapsack(BaseAlgorithm):
 
     def solve(self, input_data: dict, params: dict | None = None) -> AlgorithmResult:
         params = params or {}
-        warmup_samples = params.get("warmup_samples", 150)
-        candidate_count = params.get("candidate_count", 200)
-        top_k_exact = params.get("top_k_exact", 20)
-
         items = input_data["items"]
         capacity = input_data["capacity"]
         n = len(items)
+
+        # ── Fallback для маленьких задач ───────────────────────────
+        if n < ML_MIN_N:
+            base = GreedyKnapsack().solve(input_data, params)
+            extra = dict(base.extra or {})
+            extra.update({
+                "ml_used": False,
+                "fallback_reason": "input_too_small_for_ml",
+                "fallback_threshold": ML_MIN_N,
+                "fallback_to": "greedy",
+            })
+            return AlgorithmResult(
+                solution=base.solution,
+                cost=base.cost,
+                execution_time=base.execution_time,
+                iterations=base.iterations,
+                convergence_history=base.convergence_history,
+                extra=extra,
+            )
+
+        warmup_samples = params.get("warmup_samples", 200)
+        candidate_count = params.get("candidate_count", 80)
+        top_k_exact = params.get("top_k_exact", 10)
 
         weights = [item["weight"] for item in items]
         values = [item["value"] for item in items]
 
         surrogate = MLPSurrogateModel(
             hidden_layers=params.get("hidden_layers", (32, 16)),
+            max_iter=params.get("max_iter", 80),
+            learning_rate_init=params.get("learning_rate_init", 0.02),
         )
 
         start = time.perf_counter()
 
-        # ── Фаза 1: обучение суррогата на случайных решениях ────────
         sample_pool = [
             [random.randint(0, 1) for _ in range(n)] for _ in range(warmup_samples)
         ]
@@ -53,40 +72,50 @@ class GreedyMLKnapsack(BaseAlgorithm):
             [_exact_fitness(ind, weights, values, capacity) for ind in sample_pool]
         )
         surrogate.fit(train_X, train_y)
-
         exact_evals = warmup_samples
 
-        # ── Фаза 2: генерация жадных кандидатов с вариациями ───────
-        candidates = []
-        for _ in range(candidate_count):
+        # Гарантированные детерминированные кандидаты (жадные по всем критериям).
+        guaranteed = [
+            _deterministic_greedy(weights, values, capacity, mode="ratio"),
+            _deterministic_greedy(weights, values, capacity, mode="value"),
+        ]
+        candidates = list(guaranteed)
+        for _ in range(candidate_count - len(guaranteed)):
             alpha = random.choice([0.5, 1.0, 1.0, 1.5, 2.0])
             mode = random.choice(["ratio", "value", "ratio_alpha"])
             sol = _randomized_greedy_knapsack(
                 weights, values, capacity, mode=mode, alpha=alpha,
             )
             candidates.append(sol)
+        guaranteed_count = len(guaranteed)
 
         X_cand = np.array(candidates, dtype=float)
         pred_fitness = surrogate.predict(X_cand)
         surrogate_evals = candidate_count
 
-        # ── Фаза 3: точный пересчёт top-K ──────────────────────────
-        top_indices = np.argsort(-pred_fitness)[:top_k_exact]
+        ml_top = np.argsort(-pred_fitness)[:top_k_exact].tolist()
+        eval_indices = sorted(set(range(guaranteed_count)) | set(ml_top))
         best_solution = None
         best_value = -1.0
 
-        actual_fitness = []
-        for idx in top_indices:
+        for idx in eval_indices:
             f = _exact_fitness(candidates[idx], weights, values, capacity)
-            actual_fitness.append(f)
             exact_evals += 1
             if f > best_value:
                 best_value = f
                 best_solution = candidates[idx][:]
 
-        surrogate_r2 = surrogate.score(
-            X_cand[top_indices], np.array(actual_fitness)
+        # R² на отдельной валидационной выборке.
+        val_size = min(30, max(10, warmup_samples // 2))
+        val_pool = [
+            [random.randint(0, 1) for _ in range(n)] for _ in range(val_size)
+        ]
+        val_X = np.array(val_pool, dtype=float)
+        val_y = np.array(
+            [_exact_fitness(ind, weights, values, capacity) for ind in val_pool]
         )
+        exact_evals += val_size
+        surrogate_r2 = surrogate.score(val_X, val_y)
 
         elapsed = time.perf_counter() - start
 
@@ -118,6 +147,30 @@ class GreedyMLKnapsack(BaseAlgorithm):
 
 # ── Вспомогательные функции ─────────────────────────────────────────
 
+def _deterministic_greedy(
+    weights: list[float],
+    values: list[float],
+    capacity: float,
+    mode: str = "ratio",
+) -> list[int]:
+    """Обычный жадный без рандома."""
+    n = len(weights)
+    if mode == "value":
+        order = sorted(range(n), key=lambda i: -values[i])
+    else:
+        order = sorted(
+            range(n),
+            key=lambda i: -(values[i] / weights[i] if weights[i] > 0 else 0.0),
+        )
+    sol = [0] * n
+    total = 0.0
+    for i in order:
+        if total + weights[i] <= capacity:
+            sol[i] = 1
+            total += weights[i]
+    return sol
+
+
 def _randomized_greedy_knapsack(
     weights: list[float],
     values: list[float],
@@ -125,7 +178,6 @@ def _randomized_greedy_knapsack(
     mode: str = "ratio",
     alpha: float = 1.0,
 ) -> list[int]:
-    """Жадный отбор предметов с рандомизацией и варьируемым критерием."""
     n = len(weights)
     scores = []
     for i in range(n):
@@ -135,9 +187,8 @@ def _randomized_greedy_knapsack(
             s = v
         elif mode == "ratio_alpha":
             s = v / (w ** alpha) if w > 0 else 0.0
-        else:  # ratio
+        else:
             s = v / w if w > 0 else 0.0
-        # Лёгкое случайное возмущение для разнообразия
         s *= 1.0 + random.uniform(-0.1, 0.1)
         scores.append((s, i))
 

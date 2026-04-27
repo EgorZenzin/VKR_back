@@ -3,11 +3,12 @@
 Подход: ML-суррогат используется для отбора лучших жадных маршрутов
 из множества вариантов с рандомизированным выбором соседа.
 
-1. Обучение суррогата на случайной выборке маршрутов с известной длиной.
-2. Генерация большого пула рандомизированных жадных маршрутов
-   (разные стартовые города + случайный выбор из top-k ближайших).
-3. Быстрая оценка всех вариантов суррогатом.
-4. Точный пересчёт длины для top-K маршрутов и возврат лучшего.
+Стратегия:
+1. Если n маленькое — fallback к обычному жадному алгоритму
+   (overhead ML здесь больше, чем сам алгоритм).
+2. Иначе: лёгкий MLP, обучение на небольшой выборке,
+   генерация рандомизированных кандидатов, ML-скрининг,
+   точный пересчёт top-K.
 """
 
 import time
@@ -15,7 +16,13 @@ import random
 import numpy as np
 
 from app.algorithms.base import BaseAlgorithm, AlgorithmResult
+from app.algorithms.tsp.greedy import GreedyTSP
 from app.ml.surrogate import MLPSurrogateModel
+
+
+# Минимальный размер задачи, при котором ML имеет смысл.
+# Для n<20 жадный работает за доли миллисекунды и близок к оптимуму.
+ML_MIN_N = 20
 
 
 class GreedyMLTSP(BaseAlgorithm):
@@ -26,57 +33,88 @@ class GreedyMLTSP(BaseAlgorithm):
 
     def solve(self, input_data: dict, params: dict | None = None) -> AlgorithmResult:
         params = params or {}
-        warmup_samples = params.get("warmup_samples", 150)
-        candidate_count = params.get("candidate_count", 200)
-        top_k_exact = params.get("top_k_exact", 20)
-        top_k_neighbors = params.get("top_k_neighbors", 3)
-
         dist_matrix = _get_distance_matrix(input_data)
         n = len(dist_matrix)
 
+        # ── Fallback для маленьких задач ───────────────────────────
+        if n < ML_MIN_N:
+            base_result = GreedyTSP().solve(input_data, params)
+            extra = dict(base_result.extra or {})
+            extra.update({
+                "ml_used": False,
+                "fallback_reason": "input_too_small_for_ml",
+                "fallback_threshold": ML_MIN_N,
+                "fallback_to": "greedy",
+            })
+            return AlgorithmResult(
+                solution=base_result.solution,
+                cost=base_result.cost,
+                execution_time=base_result.execution_time,
+                iterations=base_result.iterations,
+                convergence_history=base_result.convergence_history,
+                extra=extra,
+            )
+
+        # ── Облегчённый ML-режим ───────────────────────────────────
+        warmup_samples = params.get("warmup_samples", 200)
+        candidate_count = params.get("candidate_count", 80)
+        top_k_exact = params.get("top_k_exact", 10)
+        top_k_neighbors = params.get("top_k_neighbors", 3)
+
         surrogate = MLPSurrogateModel(
             hidden_layers=params.get("hidden_layers", (32, 16)),
+            max_iter=params.get("max_iter", 80),
+            learning_rate_init=params.get("learning_rate_init", 0.02),
         )
 
         start = time.perf_counter()
 
-        # ── Фаза 1: обучение суррогата на случайных маршрутах ───────
         sample_pool = [list(np.random.permutation(n)) for _ in range(warmup_samples)]
         train_X = np.array([_encode_route(r, n) for r in sample_pool])
         train_y = np.array([_route_cost(r, dist_matrix) for r in sample_pool])
         surrogate.fit(train_X, train_y)
-
         exact_evals = warmup_samples
 
-        # ── Фаза 2: генерация рандомизированных жадных кандидатов ──
-        candidates = []
-        for _ in range(candidate_count):
+        # Гарантированные детерминированные кандидаты (жадные с разных стартов).
+        # Они всегда точно оцениваются — гарантия качества не хуже базы.
+        guaranteed = [
+            _deterministic_greedy(s, dist_matrix)
+            for s in range(min(n, 4))
+        ]
+        candidates = list(guaranteed)
+        for _ in range(candidate_count - len(guaranteed)):
             start_city = random.randint(0, n - 1)
             route = _randomized_greedy(start_city, dist_matrix, top_k_neighbors)
             candidates.append(route)
+        guaranteed_count = len(guaranteed)
 
         X_cand = np.array([_encode_route(c, n) for c in candidates])
         pred_costs = surrogate.predict(X_cand)
         surrogate_evals = candidate_count
 
-        # ── Фаза 3: точный пересчёт top-K кандидатов ───────────────
-        top_indices = np.argsort(pred_costs)[:top_k_exact]
+        # Объединяем top-K по ML + гарантированных кандидатов.
+        ml_top = np.argsort(pred_costs)[:top_k_exact].tolist()
+        eval_indices = sorted(set(range(guaranteed_count)) | set(ml_top))
         best_route = None
         best_cost = float("inf")
 
-        actual_costs = []
-        for idx in top_indices:
+        actual_costs_map: dict[int, float] = {}
+        for idx in eval_indices:
             cost = _route_cost(candidates[idx], dist_matrix)
-            actual_costs.append(cost)
+            actual_costs_map[idx] = cost
             exact_evals += 1
             if cost < best_cost:
                 best_cost = cost
                 best_route = candidates[idx][:]
 
-        # R² суррогата на проверенных кандидатах
-        surrogate_r2 = surrogate.score(
-            X_cand[top_indices], np.array(actual_costs)
-        )
+        # R² на отдельной валидационной выборке (случайные перестановки с разным
+        # разбросом стоимости) — top-K не годится, там почти нет вариации.
+        val_size = min(30, max(10, warmup_samples // 2))
+        val_routes = [list(np.random.permutation(n)) for _ in range(val_size)]
+        val_X = np.array([_encode_route(r, n) for r in val_routes])
+        val_y = np.array([_route_cost(r, dist_matrix) for r in val_routes])
+        exact_evals += val_size
+        surrogate_r2 = surrogate.score(val_X, val_y)
 
         elapsed = time.perf_counter() - start
 
@@ -102,6 +140,23 @@ class GreedyMLTSP(BaseAlgorithm):
 
 
 # ── Вспомогательные функции ─────────────────────────────────────────
+
+def _deterministic_greedy(start_city: int, dist_matrix: np.ndarray) -> list[int]:
+    """Обычный жадный маршрут (без рандома)."""
+    n = len(dist_matrix)
+    route = [start_city]
+    visited = {start_city}
+    current = start_city
+    for _ in range(n - 1):
+        nxt = min(
+            (j for j in range(n) if j not in visited),
+            key=lambda j: dist_matrix[current][j],
+        )
+        route.append(nxt)
+        visited.add(nxt)
+        current = nxt
+    return route
+
 
 def _randomized_greedy(
     start_city: int, dist_matrix: np.ndarray, top_k: int,
@@ -133,7 +188,6 @@ def _route_cost(route: list[int], dist_matrix: np.ndarray) -> float:
 
 
 def _encode_route(route: list[int], n: int) -> list[float]:
-    """Кодирование маршрута: позиция каждого города, нормированная в [0, 1]."""
     encoding = [0.0] * n
     for pos, city in enumerate(route):
         encoding[city] = pos / max(n - 1, 1)

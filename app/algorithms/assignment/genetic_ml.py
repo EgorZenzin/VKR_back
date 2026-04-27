@@ -56,15 +56,21 @@ class GeneticMLAssignment(BaseAlgorithm):
         top_indices = np.argsort(pred_costs)[:pop_size]
         population = [candidates[i] for i in top_indices]
 
+        # Сидируем популяцию детерминированным жадным назначением.
+        population[0] = _greedy_assignment(cost_matrix)
+
         surrogate_evals = candidate_count
 
-        # R² суррогата
-        check_n = min(20, pop_size)
-        actual_sample = np.array([_perm_cost(population[i], cost_matrix) for i in range(check_n)])
-        surrogate_r2 = surrogate.score(X_cand[top_indices[:check_n]], actual_sample)
+        # R² суррогата на независимой валидационной выборке.
+        val_size = min(40, max(15, warmup_samples // 3))
+        val_perms = [list(np.random.permutation(n)) for _ in range(val_size)]
+        val_X = np.array([_encode_perm(p, n) for p in val_perms])
+        val_y = np.array([_perm_cost(p, cost_matrix) for p in val_perms])
+        exact_evals += val_size
+        surrogate_r2 = surrogate.score(val_X, val_y)
 
         # ── Фаза 3: Стандартный ГА (сокращённые поколения) ─────────
-        reduced_gens = max(1, int(generations * 0.4))
+        reduced_gens = max(1, int(generations * 0.6))
 
         best_perm = None
         best_cost = float("inf")
@@ -101,6 +107,10 @@ class GeneticMLAssignment(BaseAlgorithm):
                     a, b = random.sample(range(n), 2)
                     ind[a], ind[b] = ind[b], ind[a]
 
+            # Элитизм: всегда сохраняем лучшего найденного.
+            if best_perm is not None:
+                new_pop[0] = best_perm[:]
+
             population = new_pop
 
         elapsed = time.perf_counter() - start
@@ -128,6 +138,24 @@ class GeneticMLAssignment(BaseAlgorithm):
 
 
 # ── Вспомогательные функции ─────────────────────────────────────────
+
+def _greedy_assignment(cost_matrix: np.ndarray) -> list[int]:
+    """Детерминированное жадное назначение: для каждой строки выбираем
+    минимальный неиспользованный столбец."""
+    n = len(cost_matrix)
+    used = [False] * n
+    perm: list[int] = []
+    for i in range(n):
+        best_j = -1
+        best_c = float("inf")
+        for j in range(n):
+            if not used[j] and cost_matrix[i][j] < best_c:
+                best_c = cost_matrix[i][j]
+                best_j = j
+        perm.append(best_j)
+        used[best_j] = True
+    return perm
+
 
 def _perm_cost(perm: list[int], cost_matrix: np.ndarray) -> float:
     return float(sum(cost_matrix[i][perm[i]] for i in range(len(perm))))

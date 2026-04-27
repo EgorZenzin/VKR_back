@@ -1,13 +1,10 @@
 """Имитация отжига с ML-суррогатом для задачи коммивояжёра.
 
-Подход: ML-суррогат используется для отбора перспективных соседей
-на каждом шаге отжига.
-
-1. Прогрев суррогата на случайных маршрутах с известной длиной.
-2. На каждом шаге генерируется несколько 2-opt соседей.
-3. Суррогат предсказывает их стоимость, выбирается лучший предсказанный.
-4. Точная оценка только для выбранного кандидата → Метрополис.
-5. Периодическое дообучение суррогата на накопленных точных данных.
+Стратегия:
+1. Если n маленькое — fallback к обычному SA (overhead ML на каждом
+   шаге не окупается).
+2. Иначе: лёгкий MLP, мало соседей-кандидатов, редкое дообучение,
+   ML-скрининг для выбора 2-opt соседа.
 """
 
 import time
@@ -16,7 +13,13 @@ import random
 import numpy as np
 
 from app.algorithms.base import BaseAlgorithm, AlgorithmResult
+from app.algorithms.tsp.simulated_annealing import SimulatedAnnealingTSP
 from app.ml.surrogate import MLPSurrogateModel
+
+
+# SA делает десятки тысяч итераций, MLP-predict дороже точной
+# оценки маршрута для малых n — ML окупается только для больших задач.
+ML_MIN_N = 20
 
 
 class SimulatedAnnealingMLTSP(BaseAlgorithm):
@@ -27,18 +30,39 @@ class SimulatedAnnealingMLTSP(BaseAlgorithm):
 
     def solve(self, input_data: dict, params: dict | None = None) -> AlgorithmResult:
         params = params or {}
-        initial_temp = params.get("initial_temp", 10000.0)
-        cooling_rate = params.get("cooling_rate", 0.9995)
-        min_temp = params.get("min_temp", 1e-8)
-        warmup_samples = params.get("warmup_samples", 150)
-        neighbor_candidates = params.get("neighbor_candidates", 5)
-        retrain_every = params.get("retrain_every", 500)
-
         dist_matrix = _get_distance_matrix(input_data)
         n = len(dist_matrix)
 
+        # ── Fallback для маленьких задач ───────────────────────────
+        if n < ML_MIN_N:
+            base = SimulatedAnnealingTSP().solve(input_data, params)
+            extra = dict(base.extra or {})
+            extra.update({
+                "ml_used": False,
+                "fallback_reason": "input_too_small_for_ml",
+                "fallback_threshold": ML_MIN_N,
+                "fallback_to": "simulated_annealing",
+            })
+            return AlgorithmResult(
+                solution=base.solution,
+                cost=base.cost,
+                execution_time=base.execution_time,
+                iterations=base.iterations,
+                convergence_history=base.convergence_history,
+                extra=extra,
+            )
+
+        initial_temp = params.get("initial_temp", 10000.0)
+        cooling_rate = params.get("cooling_rate", 0.9995)
+        min_temp = params.get("min_temp", 1e-8)
+        warmup_samples = params.get("warmup_samples", 50)
+        neighbor_candidates = params.get("neighbor_candidates", 2)
+        retrain_every = params.get("retrain_every", 2000)
+
         surrogate = MLPSurrogateModel(
-            hidden_layers=params.get("hidden_layers", (32, 16)),
+            hidden_layers=params.get("hidden_layers", (8,)),
+            max_iter=params.get("max_iter", 15),
+            learning_rate_init=params.get("learning_rate_init", 0.05),
         )
 
         start = time.perf_counter()
@@ -64,12 +88,11 @@ class SimulatedAnnealingMLTSP(BaseAlgorithm):
         convergence: list[float] = []
         iteration = 0
 
-        # Накопленные точные данные для дообучения
         train_X_list.append(_encode_route(current, n))
         train_y_list.append(current_cost)
 
         while temp > min_temp:
-            # Генерация нескольких 2-opt соседей
+            # Генерация соседей
             neighbors = []
             for _ in range(neighbor_candidates):
                 i, j = sorted(random.sample(range(n), 2))
@@ -77,23 +100,21 @@ class SimulatedAnnealingMLTSP(BaseAlgorithm):
                 nb[i:j + 1] = reversed(nb[i:j + 1])
                 neighbors.append(nb)
 
-            # ML-скрининг: выбираем соседа с лучшей предсказанной стоимостью
-            X_nb = np.array([_encode_route(nb, n) for nb in neighbors])
-            pred = surrogate.predict(X_nb)
-            surrogate_evals += len(neighbors)
+            # ML-скрининг только если соседей > 1
+            if neighbor_candidates > 1:
+                X_nb = np.array([_encode_route(nb, n) for nb in neighbors])
+                pred = surrogate.predict(X_nb)
+                surrogate_evals += len(neighbors)
+                chosen = neighbors[int(np.argmin(pred))]
+            else:
+                chosen = neighbors[0]
 
-            best_pred_idx = int(np.argmin(pred))
-            chosen = neighbors[best_pred_idx]
-
-            # Точная оценка только для выбранного
             chosen_cost = _route_cost(chosen, dist_matrix)
             exact_evals += 1
 
-            # Обновляем обучающую выборку
             train_X_list.append(_encode_route(chosen, n))
             train_y_list.append(chosen_cost)
 
-            # Критерий Метрополиса
             delta = chosen_cost - current_cost
             if delta < 0 or random.random() < math.exp(-delta / max(temp, 1e-12)):
                 current = chosen
@@ -109,11 +130,9 @@ class SimulatedAnnealingMLTSP(BaseAlgorithm):
             if iteration % 100 == 0:
                 convergence.append(float(best_cost))
 
-            # Периодическое дообучение
             if iteration % retrain_every == 0 and len(train_X_list) > 10:
                 surrogate.fit(np.array(train_X_list), np.array(train_y_list))
 
-        # Финальная оценка R²
         final_X = np.array(train_X_list[-min(50, len(train_X_list)):])
         final_y = np.array(train_y_list[-min(50, len(train_y_list)):])
         surrogate_r2 = surrogate.score(final_X, final_y)
