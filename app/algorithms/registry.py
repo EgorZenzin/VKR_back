@@ -26,6 +26,14 @@ from app.algorithms.tsp.genetic_ml import GeneticMLTSP
 from app.algorithms.knapsack.genetic_ml import GeneticMLKnapsack
 from app.algorithms.assignment.genetic_ml import GeneticMLAssignment
 
+from app.algorithms.tsp.greedy_ml import GreedyMLTSP
+from app.algorithms.knapsack.greedy_ml import GreedyMLKnapsack
+from app.algorithms.assignment.greedy_ml import GreedyMLAssignment
+from app.algorithms.tsp.simulated_annealing_ml import SimulatedAnnealingMLTSP
+from app.algorithms.tsp.brute_force_ml import BruteForceMLTSP
+from app.algorithms.knapsack.brute_force_ml import BruteForceMLKnapsack
+from app.algorithms.assignment.brute_force_ml import BruteForceMLAssignment
+
 
 # ── Описания задач ──────────────────────────────────────────────────
 
@@ -54,21 +62,28 @@ TASK_OPTIMIZATION: dict[str, str] = {
 TASK_REGISTRY: dict[str, dict[str, BaseAlgorithm]] = {
     "tsp": {
         "greedy": GreedyTSP(),
+        "greedy_ml": GreedyMLTSP(),
         "brute_force": BruteForceTSP(),
+        "brute_force_ml": BruteForceMLTSP(),
         "genetic": GeneticTSP(),
-        "simulated_annealing": SimulatedAnnealingTSP(),
         "genetic_ml": GeneticMLTSP(),
+        "simulated_annealing": SimulatedAnnealingTSP(),
+        "simulated_annealing_ml": SimulatedAnnealingMLTSP(),
     },
     "knapsack": {
         "greedy": GreedyKnapsack(),
+        "greedy_ml": GreedyMLKnapsack(),
         "brute_force": BruteForceKnapsack(),
+        "brute_force_ml": BruteForceMLKnapsack(),
         "dynamic_programming": DynamicKnapsack(),
         "genetic": GeneticKnapsack(),
         "genetic_ml": GeneticMLKnapsack(),
     },
     "assignment": {
         "greedy": GreedyAssignment(),
+        "greedy_ml": GreedyMLAssignment(),
         "brute_force": BruteForceAssignment(),
+        "brute_force_ml": BruteForceMLAssignment(),
         "hungarian": HungarianAssignment(),
         "genetic": GeneticAssignment(),
         "genetic_ml": GeneticMLAssignment(),

@@ -1,8 +1,11 @@
 """Генетический алгоритм с ML-суррогатом для задачи коммивояжёра.
 
-Отличие от обычного ГА: часть популяции оценивается суррогатной моделью
-(MLP) вместо точного вычисления целевой функции. Суррогат периодически
-дообучается на накопленных точных оценках.
+Подход: ML-суррогат используется как предварительный этап оценки.
+1. Обучение суррогата на случайной выборке точных решений.
+2. Генерация большого пула кандидатов, быстрая оценка суррогатом.
+3. Отбор лучших кандидатов как начальная популяция ГА.
+4. Стандартный ГА с точными оценками, но меньшим числом поколений
+   (лучшая стартовая популяция → быстрая сходимость).
 
 Метрики ML записываются в extra-поле результата для сравнения с базовым ГА.
 """
@@ -16,11 +19,7 @@ from app.ml.surrogate import MLPSurrogateModel
 
 
 class GeneticMLTSP(BaseAlgorithm):
-    """Генетический алгоритм + ML-суррогат для TSP.
-
-    Кодировка решения для суррогата: нормализованная перестановка городов
-    (вектор длины n, значения от 0 до 1).
-    """
+    """Генетический алгоритм + ML-суррогат для TSP."""
 
     name = "genetic_ml"
     display_name = "Генетический алгоритм + ML"
@@ -32,95 +31,61 @@ class GeneticMLTSP(BaseAlgorithm):
         mutation_rate = params.get("mutation_rate", 0.02)
         crossover_rate = params.get("crossover_rate", 0.8)
         # ML параметры
-        warmup_gens = params.get("warmup_generations", 20)
-        surrogate_ratio = params.get("surrogate_ratio", 0.5)
-        retrain_every = params.get("retrain_every", 10)
+        warmup_samples = params.get("warmup_samples", 150)
+        screening_factor = params.get("screening_factor", 5)
 
         dist_matrix = _get_distance_matrix(input_data)
         n = len(dist_matrix)
 
         surrogate = MLPSurrogateModel(
-            hidden_layers=params.get("hidden_layers", (64, 32)),
+            hidden_layers=params.get("hidden_layers", (32, 16)),
         )
 
         start = time.perf_counter()
 
-        population = [list(np.random.permutation(n)) for _ in range(pop_size)]
-        convergence = []
+        # ── Фаза 1: Обучение суррогата на случайной выборке ─────────
+        sample_pool = [list(np.random.permutation(n)) for _ in range(warmup_samples)]
+        train_X = np.array([_encode_route(r, n) for r in sample_pool])
+        train_y = np.array([_route_cost(r, dist_matrix) for r in sample_pool])
+        surrogate.fit(train_X, train_y)
+
+        exact_evals = warmup_samples
+
+        # ── Фаза 2: ML-скрининг начальной популяции ────────────────
+        candidate_count = pop_size * screening_factor
+        candidates = [list(np.random.permutation(n)) for _ in range(candidate_count)]
+        X_cand = np.array([_encode_route(c, n) for c in candidates])
+        pred_costs = surrogate.predict(X_cand)
+
+        top_indices = np.argsort(pred_costs)[:pop_size]
+        population = [candidates[i] for i in top_indices]
+
+        surrogate_evals = candidate_count
+
+        # R² суррогата на небольшой проверке
+        check_n = min(20, pop_size)
+        actual_sample = np.array([_route_cost(population[i], dist_matrix) for i in range(check_n)])
+        surrogate_r2 = surrogate.score(X_cand[top_indices[:check_n]], actual_sample)
+
+        # ── Фаза 3: Стандартный ГА (сокращённые поколения) ─────────
+        reduced_gens = max(1, int(generations * 0.4))
+
         best_route = None
         best_cost = float("inf")
+        convergence = []
 
-        # Накопитель обучающих данных для суррогата
-        train_X: list[list[float]] = []
-        train_y: list[float] = []
+        for gen in range(reduced_gens):
+            costs = [_route_cost(ind, dist_matrix) for ind in population]
+            exact_evals += pop_size
 
-        exact_evals = 0
-        surrogate_evals = 0
-        surrogate_scores: list[float] = []
-
-        for gen in range(generations):
-            # ── Оценка fitness ──────────────────────────────────────
-            costs = [0.0] * pop_size
-
-            if gen < warmup_gens or not surrogate.is_ready():
-                # Фаза прогрева: точная оценка всех
-                for i, ind in enumerate(population):
-                    costs[i] = _route_cost(ind, dist_matrix)
-                    train_X.append(_encode_route(ind, n))
-                    train_y.append(costs[i])
-                exact_evals += pop_size
-            else:
-                # ML-фаза: часть точно, часть суррогатом
-                n_exact = max(2, int(pop_size * (1 - surrogate_ratio)))
-                exact_indices = set(random.sample(range(pop_size), n_exact))
-
-                exact_X_batch = []
-                exact_y_batch = []
-
-                for i, ind in enumerate(population):
-                    if i in exact_indices:
-                        costs[i] = _route_cost(ind, dist_matrix)
-                        enc = _encode_route(ind, n)
-                        exact_X_batch.append(enc)
-                        exact_y_batch.append(costs[i])
-                        train_X.append(enc)
-                        train_y.append(costs[i])
-                        exact_evals += 1
-                    else:
-                        surrogate_evals += 1
-
-                # Суррогатные предсказания для оставшихся
-                surrogate_indices = [i for i in range(pop_size) if i not in exact_indices]
-                if surrogate_indices:
-                    X_pred = np.array([_encode_route(population[i], n) for i in surrogate_indices])
-                    predictions = surrogate.predict(X_pred)
-                    for idx, s_idx in enumerate(surrogate_indices):
-                        costs[s_idx] = float(predictions[idx])
-
-                # Оценка качества суррогата на точных данных этого поколения
-                if exact_X_batch:
-                    score = surrogate.score(
-                        np.array(exact_X_batch), np.array(exact_y_batch),
-                    )
-                    surrogate_scores.append(score)
-
-            # Обновление лучшего решения
             for i, ind in enumerate(population):
-                true_cost = _route_cost(ind, dist_matrix)
-                if true_cost < best_cost:
-                    best_cost = true_cost
+                if costs[i] < best_cost:
+                    best_cost = costs[i]
                     best_route = ind[:]
 
             convergence.append(float(best_cost))
 
-            # ── Дообучение суррогата ────────────────────────────────
-            if (gen == warmup_gens - 1) or (
-                gen >= warmup_gens and gen % retrain_every == 0
-            ):
-                if len(train_X) >= 10:
-                    surrogate.fit(np.array(train_X), np.array(train_y))
-
-            # ── Генетические операторы (те же, что в базовом ГА) ────
+            # ── Генетические операторы ──────────────────────────────
             fitness = [1.0 / max(c, 1e-10) for c in costs]
 
             new_pop = []
@@ -144,23 +109,22 @@ class GeneticMLTSP(BaseAlgorithm):
 
         elapsed = time.perf_counter() - start
 
-        avg_score = float(np.mean(surrogate_scores)) if surrogate_scores else 0.0
-
         return AlgorithmResult(
             solution=best_route,
             cost=float(best_cost),
             execution_time=elapsed,
-            iterations=generations,
+            iterations=reduced_gens,
             convergence_history=convergence,
             extra={
                 "ml_used": True,
                 "surrogate_model": "MLPRegressor",
                 "exact_evaluations": exact_evals,
                 "surrogate_evaluations": surrogate_evals,
-                "surrogate_accuracy_r2": round(avg_score, 4),
-                "warmup_generations": warmup_gens,
-                "surrogate_ratio": surrogate_ratio,
-                "training_samples": len(train_X),
+                "surrogate_accuracy_r2": round(surrogate_r2, 4),
+                "warmup_samples": warmup_samples,
+                "screening_factor": screening_factor,
+                "reduced_generations": reduced_gens,
+                "training_samples": warmup_samples,
             },
         )
 

@@ -32,16 +32,13 @@ def solve_problem(
         task_name, input_data, result.solution, result.extra,
     )
 
-    # Извлечение ML-метрик из extra (если алгоритм с ML)
+    # Извлечение ML-метрик из extra (если алгоритм с ML).
+    # Берём все поля extra, кроме известных полей предметных данных.
     ml_metrics = None
     if result.extra.get("ml_used"):
+        _NON_ML_KEYS = {"total_weight"}
         ml_metrics = {
-            k: v for k, v in result.extra.items()
-            if k in (
-                "ml_used", "surrogate_model", "exact_evaluations",
-                "surrogate_evaluations", "surrogate_accuracy_r2",
-                "warmup_generations", "surrogate_ratio", "training_samples",
-            )
+            k: v for k, v in result.extra.items() if k not in _NON_ML_KEYS
         }
 
     return SolveResponse(

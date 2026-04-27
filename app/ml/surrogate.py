@@ -32,9 +32,9 @@ class MLPSurrogateModel(BaseSurrogateModel):
 
     def __init__(
         self,
-        hidden_layers: tuple[int, ...] = (64, 32),
-        max_iter: int = 200,
-        learning_rate_init: float = 0.001,
+        hidden_layers: tuple[int, ...] = (32, 16),
+        max_iter: int = 50,
+        learning_rate_init: float = 0.01,
         activation: str = "relu",
         random_state: int | None = 42,
     ):
@@ -47,17 +47,15 @@ class MLPSurrogateModel(BaseSurrogateModel):
             learning_rate_init=learning_rate_init,
             activation=activation,
             random_state=random_state,
-            early_stopping=True,
-            validation_fraction=0.15,
-            n_iter_no_change=10,
-            warm_start=True,  # инкрементальное дообучение
+            early_stopping=False,
+            warm_start=False,
         )
         self._scaler_X = StandardScaler()
         self._scaler_y = StandardScaler()
         self._trained = False
 
     def fit(self, X: np.ndarray, y: np.ndarray) -> None:
-        """Обучить / дообучить модель на новых данных."""
+        """Обучить модель на данных."""
         if len(X) < 5:
             return
 

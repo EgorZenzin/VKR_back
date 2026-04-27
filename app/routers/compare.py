@@ -34,4 +34,3 @@ def compare(request: CompareRequest):
             status_code=500,
             detail=f"Ошибка при сравнении: {str(e)}",
         )
-from fastapi import APIRouter, HTTPException, Depends

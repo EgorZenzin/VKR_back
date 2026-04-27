@@ -24,28 +24,11 @@ class KnapsackParams(BaseModel):
     population_size: int = Field(default=100, ge=10)
     generations: int = Field(default=300, ge=1)
     mutation_rate: float = Field(default=0.05, ge=0.0, le=1.0)
-from pydantic import BaseModel
-
-
-class Item(BaseModel):
-    weight: float
-    value: float
-    name: str | None = None
-
-
-class KnapsackInput(BaseModel):
-    items: list[Item]
-    capacity: float
-
-
-class KnapsackParams(BaseModel):
-    # Генетический алгоритм
-    population_size: int = 100
-    generations: int = 300
-    mutation_rate: float = 0.05
 
 
 class KnapsackResult(BaseModel):
+    """Результат решения задачи о рюкзаке."""
+
     selected_items: list[int]
     total_value: float
     total_weight: float
