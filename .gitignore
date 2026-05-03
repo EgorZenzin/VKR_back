@@ -23,6 +23,11 @@ env/
 Thumbs.db
 .DS_Store
 
+# Temp
+.tmp_docx_extract/
+*.tmp
+*.bak
+
 # Environment variables
 .env
 

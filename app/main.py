@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.routers import tasks, solver, compare
+from app.routers import tasks, solver, compare, auth, history
 
 app = FastAPI(
     title=settings.APP_TITLE,
@@ -25,9 +25,11 @@ app.add_middleware(
 )
 
 # Роутеры
+app.include_router(auth.router)
 app.include_router(tasks.router)
 app.include_router(solver.router)
 app.include_router(compare.router)
+app.include_router(history.router)
 
 
 @app.get("/health", tags=["Система"])

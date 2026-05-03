@@ -3,8 +3,12 @@
 POST /compare — сравнить несколько алгоритмов на одной задаче.
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.deps import get_current_user_optional
+from app.db.models import ComparisonHistory, User
+from app.db.session import get_db
 from app.schemas.common import CompareRequest, CompareResponse
 from app.services.compare_service import compare_algorithms
 
@@ -12,14 +16,17 @@ router = APIRouter(tags=["Сравнение"])
 
 
 @router.post("/compare", response_model=CompareResponse)
-def compare(request: CompareRequest):
+async def compare(
+    request: CompareRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User | None = Depends(get_current_user_optional),
+):
     """Сравнить несколько алгоритмов на одной задаче.
 
-    Возвращает результаты каждого алгоритма и подготовленные данные
-    для графиков сравнения (сходимость, время, качество).
+    Если запрос авторизован — сохраняется в историю сравнений пользователя.
     """
     try:
-        return compare_algorithms(
+        response = compare_algorithms(
             task_name=request.task_name,
             algorithm_names=request.algorithms,
             input_data=request.input_data,
@@ -34,3 +41,23 @@ def compare(request: CompareRequest):
             status_code=500,
             detail=f"Ошибка при сравнении: {str(e)}",
         )
+
+    if current_user is not None:
+        try:
+            payload = response.model_dump() if hasattr(response, "model_dump") else dict(response)
+            db.add(
+                ComparisonHistory(
+                    user_id=current_user.id,
+                    task_name=request.task_name,
+                    algorithms=list(request.algorithms),
+                    input_data=request.input_data,
+                    params=request.params,
+                    result=payload,
+                    algorithms_count=len(request.algorithms),
+                )
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+
+    return response
