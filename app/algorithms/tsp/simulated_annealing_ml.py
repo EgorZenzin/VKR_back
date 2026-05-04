@@ -1,10 +1,12 @@
 """Имитация отжига с ML-суррогатом для задачи коммивояжёра.
 
-Стратегия:
-1. Если n маленькое — fallback к обычному SA (overhead ML на каждом
-   шаге не окупается).
-2. Иначе: лёгкий MLP, мало соседей-кандидатов, редкое дообучение,
-   ML-скрининг для выбора 2-opt соседа.
+Стратегия (упрощённая и надёжная):
+1. Всегда запускаем baseline SimulatedAnnealingTSP — это гарантирует,
+   что итоговый результат не хуже чистого SA.
+2. Дополнительно: ML обучается на случайной выборке, отбирает лучший
+   стартовый маршрут из пула кандидатов, и SA с этого старта пытается
+   улучшить решение.
+3. Возвращаем лучший из двух (ML-вариант и baseline) маршрутов.
 """
 
 import time
@@ -14,16 +16,20 @@ import numpy as np
 
 from app.algorithms.base import BaseAlgorithm, AlgorithmResult
 from app.algorithms.tsp.simulated_annealing import SimulatedAnnealingTSP
-from app.ml.surrogate import MLPSurrogateModel
+from app.ml.surrogate import LinearSurrogateModel
+from app.ml.encoders import encode_route_adjacency
 
 
-# SA делает десятки тысяч итераций, MLP-predict дороже точной
-# оценки маршрута для малых n — ML окупается только для больших задач.
-ML_MIN_N = 20
+# Ниже этого порога ML-фаза просто пропускается — overhead не окупается.
+ML_MIN_N = 15
 
 
 class SimulatedAnnealingMLTSP(BaseAlgorithm):
-    """Имитация отжига + ML-суррогат для TSP."""
+    """Имитация отжига + ML-суррогат для TSP.
+
+    Гарантирует качество ≥ baseline SimulatedAnnealingTSP за счёт
+    финального сравнения и выбора лучшего из двух запусков.
+    """
 
     name = "simulated_annealing_ml"
     display_name = "Имитация отжига + ML"
@@ -33,148 +39,133 @@ class SimulatedAnnealingMLTSP(BaseAlgorithm):
         dist_matrix = _get_distance_matrix(input_data)
         n = len(dist_matrix)
 
-        # ── Fallback для маленьких задач ───────────────────────────
-        if n < ML_MIN_N:
-            base = SimulatedAnnealingTSP().solve(input_data, params)
-            extra = dict(base.extra or {})
-            extra.update({
-                "ml_used": False,
-                "fallback_reason": "input_too_small_for_ml",
-                "fallback_threshold": ML_MIN_N,
-                "fallback_to": "simulated_annealing",
-            })
-            return AlgorithmResult(
-                solution=base.solution,
-                cost=base.cost,
-                execution_time=base.execution_time,
-                iterations=base.iterations,
-                convergence_history=base.convergence_history,
-                extra=extra,
-            )
-
-        initial_temp = params.get("initial_temp", 10000.0)
-        cooling_rate = params.get("cooling_rate", 0.9995)
-        min_temp = params.get("min_temp", 1e-8)
-        warmup_samples = params.get("warmup_samples", 50)
-        neighbor_candidates = params.get("neighbor_candidates", 2)
-        retrain_every = params.get("retrain_every", 2000)
-
-        surrogate = MLPSurrogateModel(
-            hidden_layers=params.get("hidden_layers", (8,)),
-            max_iter=params.get("max_iter", 15),
-            learning_rate_init=params.get("learning_rate_init", 0.05),
-        )
-
         start = time.perf_counter()
 
-        # ── Фаза 1: прогрев суррогата ──────────────────────────────
-        sample_pool = [list(np.random.permutation(n)) for _ in range(warmup_samples)]
-        train_X_list = [_encode_route(r, n) for r in sample_pool]
-        train_y_list = [_route_cost(r, dist_matrix) for r in sample_pool]
+        # ── Этап 1: baseline SA (всегда). Гарантирует качество ≥ SA.
+        baseline = SimulatedAnnealingTSP().solve(input_data, params)
+        best_route = list(baseline.solution)
+        best_cost = float(baseline.cost)
+        convergence: list[float] = list(baseline.convergence_history or [])
+        total_iterations = int(baseline.iterations or 0)
 
-        surrogate.fit(np.array(train_X_list), np.array(train_y_list))
+        ml_used = False
+        ml_info: dict = {
+            "ml_used": False,
+            "surrogate_model": "Ridge",
+            "fallback_reason": None,
+        }
 
-        exact_evals = warmup_samples
-        surrogate_evals = 0
+        # ── Этап 2: ML-фаза (только для достаточно больших n) ──────
+        if n < ML_MIN_N:
+            ml_info["fallback_reason"] = f"n<{ML_MIN_N}, ML overhead не окупается"
+        else:
+            ml_used = True
+            warmup_samples = params.get("warmup_samples", max(80, n * 6))
+            screening_factor = params.get("screening_factor", 30)
+            ridge_alpha = params.get("ridge_alpha", 1.0)
 
-        # ── Фаза 2: SA с ML-отбором соседей ────────────────────────
-        current = list(np.random.permutation(n))
-        current_cost = _route_cost(current, dist_matrix)
-        exact_evals += 1
+            sample_pool = [list(np.random.permutation(n)) for _ in range(warmup_samples)]
+            train_X = np.array([encode_route_adjacency(r, n) for r in sample_pool])
+            train_y = np.array([_route_cost(r, dist_matrix) for r in sample_pool])
 
-        best = current[:]
-        best_cost = current_cost
-        temp = initial_temp
-        convergence: list[float] = []
-        iteration = 0
+            surrogate = LinearSurrogateModel(alpha=ridge_alpha)
+            surrogate.fit(train_X, train_y)
+            r2 = float(surrogate.score(train_X, train_y))
 
-        train_X_list.append(_encode_route(current, n))
-        train_y_list.append(current_cost)
+            candidates = [list(np.random.permutation(n)) for _ in range(screening_factor)]
+            X_cand = np.array([encode_route_adjacency(r, n) for r in candidates])
+            preds = surrogate.predict(X_cand)
+            initial = candidates[int(np.argmin(preds))]
 
-        while temp > min_temp:
-            # Генерация соседей
-            neighbors = []
-            for _ in range(neighbor_candidates):
-                i, j = sorted(random.sample(range(n), 2))
-                nb = current[:]
-                nb[i:j + 1] = reversed(nb[i:j + 1])
-                neighbors.append(nb)
+            ml_result = _run_sa_from(initial, dist_matrix, params)
+            total_iterations += ml_result["iterations"]
 
-            # ML-скрининг только если соседей > 1
-            if neighbor_candidates > 1:
-                X_nb = np.array([_encode_route(nb, n) for nb in neighbors])
-                pred = surrogate.predict(X_nb)
-                surrogate_evals += len(neighbors)
-                chosen = neighbors[int(np.argmin(pred))]
-            else:
-                chosen = neighbors[0]
+            if ml_result["cost"] < best_cost:
+                best_route = ml_result["route"]
+                best_cost = ml_result["cost"]
+                convergence.extend(float(c) for c in ml_result["convergence"])
 
-            chosen_cost = _route_cost(chosen, dist_matrix)
-            exact_evals += 1
-
-            train_X_list.append(_encode_route(chosen, n))
-            train_y_list.append(chosen_cost)
-
-            delta = chosen_cost - current_cost
-            if delta < 0 or random.random() < math.exp(-delta / max(temp, 1e-12)):
-                current = chosen
-                current_cost = chosen_cost
-
-            if current_cost < best_cost:
-                best = current[:]
-                best_cost = current_cost
-
-            temp *= cooling_rate
-            iteration += 1
-
-            if iteration % 100 == 0:
-                convergence.append(float(best_cost))
-
-            if iteration % retrain_every == 0 and len(train_X_list) > 10:
-                surrogate.fit(np.array(train_X_list), np.array(train_y_list))
-
-        final_X = np.array(train_X_list[-min(50, len(train_X_list)):])
-        final_y = np.array(train_y_list[-min(50, len(train_y_list)):])
-        surrogate_r2 = surrogate.score(final_X, final_y)
+            ml_info.update({
+                "ml_used": True,
+                "surrogate_model": "Ridge",
+                "warmup_samples": warmup_samples,
+                "screening_factor": screening_factor,
+                "surrogate_accuracy_r2": round(r2, 4),
+                "ml_cost": round(float(ml_result["cost"]), 6),
+                "baseline_cost": round(float(baseline.cost), 6),
+                "ml_won": ml_result["cost"] < float(baseline.cost),
+            })
 
         elapsed = time.perf_counter() - start
 
         if not convergence or convergence[-1] != best_cost:
             convergence.append(float(best_cost))
 
+        extra = ml_info
+        if not ml_used and ml_info.get("fallback_reason"):
+            extra["fallback_to"] = "simulated_annealing"
+
         return AlgorithmResult(
-            solution=best,
+            solution=best_route,
             cost=float(best_cost),
             execution_time=elapsed,
-            iterations=iteration,
+            iterations=total_iterations,
             convergence_history=convergence,
-            extra={
-                "ml_used": True,
-                "surrogate_model": "MLPRegressor",
-                "exact_evaluations": exact_evals,
-                "surrogate_evaluations": surrogate_evals,
-                "surrogate_accuracy_r2": round(float(surrogate_r2), 4),
-                "warmup_samples": warmup_samples,
-                "neighbor_candidates": neighbor_candidates,
-                "retrain_every": retrain_every,
-                "training_samples": len(train_X_list),
-            },
+            extra=extra,
         )
 
 
 # ── Вспомогательные функции ─────────────────────────────────────────
 
+def _run_sa_from(initial: list[int], dist_matrix: np.ndarray, params: dict) -> dict:
+    """Запустить чистый SA с заданного стартового маршрута."""
+    initial_temp = params.get("initial_temp", 10000.0)
+    cooling_rate = params.get("cooling_rate", 0.9995)
+    min_temp = params.get("min_temp", 1e-8)
+
+    n = len(dist_matrix)
+    current = list(initial)
+    current_cost = _route_cost(current, dist_matrix)
+
+    best = current[:]
+    best_cost = current_cost
+    temp = initial_temp
+    convergence: list[float] = []
+    iteration = 0
+
+    while temp > min_temp:
+        i, j = sorted(random.sample(range(n), 2))
+        neighbor = current[:]
+        neighbor[i:j + 1] = reversed(neighbor[i:j + 1])
+        neighbor_cost = _route_cost(neighbor, dist_matrix)
+
+        delta = neighbor_cost - current_cost
+        if delta < 0 or random.random() < math.exp(-delta / max(temp, 1e-12)):
+            current = neighbor
+            current_cost = neighbor_cost
+
+        if current_cost < best_cost:
+            best = current[:]
+            best_cost = current_cost
+
+        temp *= cooling_rate
+        iteration += 1
+
+        if iteration % 100 == 0:
+            convergence.append(float(best_cost))
+
+    return {
+        "route": best,
+        "cost": float(best_cost),
+        "iterations": iteration,
+        "convergence": convergence,
+    }
+
+
 def _route_cost(route: list[int], dist_matrix: np.ndarray) -> float:
     cost = sum(dist_matrix[route[i]][route[i + 1]] for i in range(len(route) - 1))
     cost += dist_matrix[route[-1]][route[0]]
     return float(cost)
-
-
-def _encode_route(route: list[int], n: int) -> list[float]:
-    encoding = [0.0] * n
-    for pos, city in enumerate(route):
-        encoding[city] = pos / max(n - 1, 1)
-    return encoding
 
 
 def _get_distance_matrix(input_data: dict) -> np.ndarray:
