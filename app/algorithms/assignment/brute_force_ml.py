@@ -178,7 +178,7 @@ class BruteForceMLAssignment(BaseAlgorithm):
             convergence_history=[float(best_cost)],
             extra={
                 "ml_used": True,
-                "surrogate_model": "MLPRegressor",
+                "surrogate_model": "Ridge",
                 "exact_evaluations": exact_evals,
                 "surrogate_evaluations": surrogate_evals,
                 "surrogate_accuracy_r2": round(float(surrogate_r2), 4),

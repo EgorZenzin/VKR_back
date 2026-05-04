@@ -125,7 +125,7 @@ class GeneticMLAssignment(BaseAlgorithm):
             convergence_history=convergence,
             extra={
                 "ml_used": True,
-                "surrogate_model": "MLPRegressor",
+                "surrogate_model": "Ridge",
                 "exact_evaluations": exact_evals,
                 "surrogate_evaluations": surrogate_evals,
                 "surrogate_accuracy_r2": round(surrogate_r2, 4),

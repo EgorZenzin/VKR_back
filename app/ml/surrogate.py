@@ -1,4 +1,4 @@
-"""MLP-суррогатная модель на базе scikit-learn.
+﻿"""MLP-суррогатная модель на базе scikit-learn.
 
 Многослойный перцептрон (MLP) обучается предсказывать значение целевой
 функции по кодировке решения. Используется как быстрый аппроксиматор
@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import numpy as np
+from sklearn.linear_model import Ridge
 from sklearn.neural_network import MLPRegressor
 from sklearn.preprocessing import StandardScaler
 
@@ -91,6 +92,45 @@ class MLPSurrogateModel(BaseSurrogateModel):
         if not self._trained or len(X) < 2:
             return 0.0
 
+        predictions = self.predict(X)
+        ss_res = np.sum((y - predictions) ** 2)
+        ss_tot = np.sum((y - np.mean(y)) ** 2)
+        if ss_tot == 0:
+            return 1.0 if ss_res == 0 else 0.0
+        return float(1.0 - ss_res / ss_tot)
+
+
+class LinearSurrogateModel(BaseSurrogateModel):
+    """Суррогат на основе Ridge-регрессии.
+
+    Подходит для задач, где целевая функция линейна (или почти линейна)
+    относительно кодировки решения — например, длина TSP-маршрута по
+    adjacency-кодировке или стоимость assignment по бинарной матрице.
+    Регуляризация (alpha) делает модель устойчивой при p > n.
+    """
+
+    def __init__(self, alpha: float = 1.0):
+        self.alpha = alpha
+        self._model = Ridge(alpha=alpha, fit_intercept=True)
+        self._trained = False
+
+    def fit(self, X: np.ndarray, y: np.ndarray) -> None:
+        if len(X) < 2:
+            return
+        self._model.fit(X, y)
+        self._trained = True
+
+    def predict(self, X: np.ndarray) -> np.ndarray:
+        if not self._trained:
+            raise RuntimeError("Модель не обучена. Вызовите fit() перед predict().")
+        return self._model.predict(X)
+
+    def is_ready(self) -> bool:
+        return self._trained
+
+    def score(self, X: np.ndarray, y: np.ndarray) -> float:
+        if not self._trained or len(X) < 2:
+            return 0.0
         predictions = self.predict(X)
         ss_res = np.sum((y - predictions) ** 2)
         ss_tot = np.sum((y - np.mean(y)) ** 2)
